@@ -37,6 +37,11 @@ import re
 from email.generator import Generator as EmailGenerator
 from six.moves import input
 
+
+# To handle BIG folders
+import imaplib
+imaplib._MAXLINE = 1000000
+
 from imapclient import IMAPClient
 
 import conf
@@ -65,26 +70,35 @@ def main():
     for folder in source_account.list_folders():
         print("Synchronizing folder '%s'" % folder)
         folder_sync_start = time.time()
-        target_folder = target_account.create_folder(folder)
-        folder_info = source_account.select_folder(folder)
-        if folder_info is None:
-            print("\t'%s' is in ignored folders, skipping" % folder)
-            continue
-        print("\tcontains %s messages" % folder_info['EXISTS'])
-        for message_id in source_account.fetch_message_ids():
-            if db.is_message_seen(target_folder, message_id):
-                print("\t\tskipping message '%s', already uploaded to '%s'" %
-                        (message_id, target_folder))
+        try:
+            target_folder = target_account.create_folder(folder)
+        except Exception:
+            print("\t Directory Exists '%s'" % folder)
+
+        try:
+            folder_info = source_account.select_folder(folder)
+            if folder_info is None:
+                print("\t'%s' is in ignored folders, skipping" % folder)
                 continue
-            msg, flags, size, date = source_account.fetch_message(message_id)
-            print("\t\tuploading message '%s' of %s bytes to '%s'" %
-                    (message_id, size, target_folder))
-            target_account.append(target_folder, msg, flags, date)
-            db.mark_message_seen(target_folder, message_id)
-            total_messages += 1
-            total_bytes += size
-        print("\t'%s' done, took %s seconds, %d total messages uploaded" %
-                (folder, time.time() - folder_sync_start, total_messages))
+            print("\tcontains %s messages" % folder_info['EXISTS'])
+            for message_id in source_account.fetch_message_ids():
+                if db.is_message_seen(target_folder, message_id):
+                    print("\t\tskipping message '%s', already uploaded to '%s'" %
+                          (message_id, target_folder))
+                    continue
+                msg, flags, size, date = source_account.fetch_message(message_id)
+                print("\t\tuploading message '%s' of %s bytes to '%s'" %
+                      (message_id, size, target_folder))
+                target_account.append(target_folder, msg, flags, date)
+                db.mark_message_seen(target_folder, message_id)
+                total_messages += 1
+                total_bytes += size
+            print("\t'%s' done, took %s seconds, %d total messages uploaded" %
+                  (folder, time.time() - folder_sync_start, total_messages))
+        except Exception as e:
+            print("generic error",e)
+
+
 
     run_duration = datetime.timedelta(seconds=time.time() - total_sync_start)
     print("Synchronization of %d messages (%s bytes) finished, took %s" %
@@ -154,7 +168,12 @@ class Target(Base):
         return folder
 
     def append(self, folder, message, flags, date):
-        self.server.append(folder, message, flags, date, do_encode=False)
+        try:
+            self.server.append(folder, message, flags, date, do_encode=False)
+        except Exception as e:
+            print("Error on message copy:",e)
+            print("Uploading without FLAGS..:")
+            self.server.append(folder, message, '', date, do_encode=False)
 
 
 class Database(object):
